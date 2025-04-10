@@ -24,13 +24,75 @@ import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
-  
+  const { session, admin } = await authenticate.admin(request);
+
+  // Get user data from Shopify Admin API
+  const response = await admin.graphql(
+    `#graphql
+      query getShopOwner {
+        shop {
+          id
+          name
+          email
+        }
+      }
+    `,
+  );
+
+  const responseJson = await response.json();
+  const shopData = responseJson.data.shop;
+
+  const customerId = shopData.id;
+  console.log(customerId);
+
+  // const customerResponse = await admin.graphql(
+  //   `#graphql
+  // query getCustomer($customerId: ID!) {
+  //   customer(id: $customerId) {
+  //     id
+  //     firstName
+  //     lastName
+  //     email
+  //     phone
+  //     numberOfOrders
+  //     amountSpent {
+  //       amount
+  //       currencyCode
+  //     }
+  //     createdAt
+  //     updatedAt
+  //     note
+  //     verifiedEmail
+  //     tags
+  //     lifetimeDuration
+  //     defaultAddress {
+  //       formattedArea
+  //       address1
+  //     }
+  //     addresses {
+  //       address1
+  //     }
+  //     image {
+  //       url
+  //     }
+  //     canDelete
+  //   }
+  // }`,
+  //   {
+  //     variables: {
+  //       customerId,
+  //     },
+  //   },
+  // );
+
+  // const customerResponseJson = await customerResponse.json();
+  // const customerData = customerResponseJson.data;
+
   // Get the current session data
   const currentSession = await prisma.session.findUnique({
     where: {
-      id: session.id
-    }
+      id: session.id,
+    },
   });
 
   // Use type assertion to access the apiKey field
@@ -39,26 +101,71 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   return json({
     apiKey,
-    isConnected: Boolean(apiKey)
+    isConnected: Boolean(apiKey),
+    customerId,
+    shopData,
+    error: "Please provide an API key to connect to the service.",
+    // user: {
+    //   customerData,
+    // },
   });
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session, admin } = await authenticate.admin(request);
   const formData = await request.formData();
-
   if (formData.get("action") === "save_api_key") {
+    const prevApiKey = formData.get("prevApiKey")?.toString() || "";
     const apiKey = formData.get("apiKey")?.toString() || "";
-
-    // Use a raw SQL update since TypeScript doesn't recognize the apiKey field
-    await prisma.$executeRaw`UPDATE "Session" SET "apiKey" = ${apiKey} WHERE "id" = ${session.id}`;
-
-    return json({
-      type: "api_key_update",
-      status: "success",
+    const shopData = formData.get("shopData") as string;
+    const data = {
+      store_details: shopData,
       apiKey,
-      isConnected: Boolean(apiKey),
-    });
+      prevApiKey,
+    };
+    try {
+      // Make API call to validate the API key
+      const response = await fetch(
+        "http://localhost:3000/api/update-shopify-sessionId",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(data),
+        },
+      );
+
+      const isValid = response.status === 200;
+
+      if (isValid) {
+        // Save API key only if validation was successful
+        await prisma.$executeRaw`UPDATE "Session" SET "apiKey" = ${apiKey} WHERE "id" = ${session.id}`;
+
+        return json({
+          type: "api_key_update",
+          status: "success",
+          apiKey,
+          isConnected: true,
+        });
+      } else {
+        return json({
+          type: "api_key_update",
+          status: "error",
+          apiKey: "",
+          isConnected: false,
+          error: "Invalid API key",
+        });
+      }
+    } catch (error) {
+      return json({
+        type: "api_key_update",
+        status: "error",
+        apiKey: "",
+        isConnected: false,
+        error: "Failed to validate API key",
+      });
+    }
   }
 
   // Handle product creation (existing code)
@@ -139,9 +246,10 @@ export default function Index() {
   const isLoading =
     ["loading", "submitting"].includes(fetcher.state) &&
     fetcher.formMethod === "POST";
-  
+
   // Use type assertion to help TypeScript understand our data structure
-  const productData = fetcher.data?.type === "product_creation" ? (fetcher.data as any) : null;
+  const productData =
+    fetcher.data?.type === "product_creation" ? (fetcher.data as any) : null;
   const productId = productData?.product?.id?.replace(
     "gid://shopify/Product/",
     "",
@@ -159,11 +267,16 @@ export default function Index() {
   // For API key saving
   const handleApiKeySave = () => {
     fetcher.submit(
-      { action: "save_api_key", apiKey },
-      { method: "POST" }
+      {
+        action: "save_api_key",
+        apiKey,
+        prevApiKey: apiKey,
+        shopData: JSON.stringify(loaderData.shopData),
+      },
+      { method: "POST" },
     );
-    setApiKeySaved(true);
-    setTimeout(() => setApiKeySaved(false), 3000);
+    // setApiKeySaved(true);
+    // setTimeout(() => setApiKeySaved(false), 3000);
   };
 
   return (
@@ -181,28 +294,41 @@ export default function Index() {
                     </Text>
                     <InlineStack gap="200" align="center">
                       <Icon source={CheckIcon} tone="success" />
-                      <Text as="span" variant="bodyMd" fontWeight="bold">LIVE</Text>
+                      <Text as="span" variant="bodyMd" fontWeight="bold">
+                        LIVE
+                      </Text>
                     </InlineStack>
                   </InlineStack>
-                  
+
                   <Banner title="Connected" tone="success">
                     You are successfully connected to the API service.
                   </Banner>
-                  
+
                   <InlineStack align="space-between">
-                    <Text as="span" variant="bodyMd">API Key:</Text>
                     <Text as="span" variant="bodyMd">
-                      {loaderData.apiKey.substring(0, 4)}•••••••{loaderData.apiKey.substring(loaderData.apiKey.length - 4)}
+                      API Key:
+                    </Text>
+                    <Text as="span" variant="bodyMd">
+                      {loaderData.apiKey.substring(0, 4)}•••••••
+                      {loaderData.apiKey.substring(
+                        loaderData.apiKey.length - 4,
+                      )}
                     </Text>
                   </InlineStack>
-                  
-                  <Button 
+
+                  <Button
+                    loading={isLoading}
+                    disabled={isLoading}
                     onClick={() => {
-                      setApiKey("");
                       fetcher.submit(
-                        { action: "save_api_key", apiKey: "" },
-                        { method: "POST" }
+                        {
+                          action: "save_api_key",
+                          apiKey: "",
+                          prevApiKey: apiKey,
+                        },
+                        { method: "POST" },
                       );
+                      setApiKey("");
                     }}
                   >
                     Disconnect
@@ -215,15 +341,13 @@ export default function Index() {
                   <Text as="h2" variant="headingMd">
                     API Configuration
                   </Text>
-                  {apiKeySaved && (
+                  {/* {apiKeySaved && (
                     <Banner title="Success" tone="success">
                       API key has been saved successfully.
                     </Banner>
-                  )}
-                  <Banner
-                    title="API Key Missing"
-                    tone="critical"
-                  >
+                  )} */}
+
+                  <Banner title="Add API key" tone="critical">
                     Please provide an API key to connect to the service.
                   </Banner>
                   <TextField
@@ -233,8 +357,13 @@ export default function Index() {
                     autoComplete="off"
                     helpText="Enter your API key for integration"
                   />
-                  <Button variant="primary" onClick={handleApiKeySave}>
-                    Save API Key
+                  <Button
+                    variant="primary"
+                    onClick={handleApiKeySave}
+                    loading={isLoading}
+                    disabled={isLoading}
+                  >
+                    {isLoading ? "Saving..." : "Save API Key"}
                   </Button>
                 </BlockStack>
               </Card>
