@@ -42,6 +42,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session, admin } = await authenticate.admin(request);
+  console.log("Starting customer sync process...");
 
   // Get API key from session
   const currentSession = await prisma.session.findUnique({
@@ -55,6 +56,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const apiKey = sessionData?.apiKey || "";
 
   if (!apiKey) {
+    console.log("Sync failed: No API key configured");
     return json({
       success: false,
       message:
@@ -64,81 +66,123 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   try {
-    // Query customers from Shopify using GraphQL
-    const response = await admin.graphql(
-      `#graphql
-      query GetCustomers($first: Int!) {
-        customers(first: $first) {
-          edges {
-            node {
-              id
-              firstName
-              lastName
-              email
-              phone
-              defaultAddress {
-                address1
-                address2
-                city
-                province
-                country
-                zip
+    let hasNextPage = true;
+    let cursor = null;
+    let allCustomers: any[] = [];
+    let batchNumber = 0;
+    const BATCH_SIZE = 50;
+
+    console.log(`Starting batch processing with size: ${BATCH_SIZE}`);
+
+    while (hasNextPage) {
+      batchNumber++;
+      console.log(`Processing batch #${batchNumber}...`);
+
+      const response = await admin.graphql(
+        `#graphql
+        query GetCustomers($first: Int!, $after: String) {
+          customers(first: $first, after: $after) {
+            edges {
+              node {
+                id
+                firstName
+                lastName
+                email
                 phone
+                defaultAddress {
+                  address1
+                  address2
+                  city
+                  province
+                  country
+                  zip
+                  phone
+                }
+                createdAt
+                updatedAt
+                tags
+                lifetimeDuration
               }
-              createdAt
-              updatedAt
-              tags
-              lifetimeDuration
+              cursor
+            }
+            pageInfo {
+              hasNextPage
+              endCursor
             }
           }
-          pageInfo {
-            hasNextPage
-            endCursor
-          }
-        }
-      }`,
-      {
-        variables: {
-          first: 50, // Fetch first 50 customers
+        }`,
+        {
+          variables: {
+            first: BATCH_SIZE,
+            after: cursor,
+          },
         },
-      },
-    );
-
-    const responseJson = await response.json();
-    const customers = responseJson.data.customers.edges.map(
-      (edge: any) => edge.node,
-    );
-
-    // Send customers to the external API
-    const externalApiResponse = await fetch(
-      "http://localhost:3000/api/customer-sync",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          shop: session.shop,
-          customers,
-          syncDate: new Date().toISOString(),
-        }),
-      },
-    );
-
-    if (!externalApiResponse.ok) {
-      throw new Error(
-        `API call failed with status: ${externalApiResponse.status}`,
       );
+
+      const responseJson = await response.json();
+      // console.log(responseJson);
+      const customers = responseJson.data.customers.edges.map(
+        (edge: any) => edge.node,
+      );
+
+      console.log(responseJson.data.customers.pageInfo);
+      hasNextPage = responseJson.data.customers.pageInfo.hasNextpage;
+
+      // console.log(`Batch #${batchNumber}: Found ${customers.length} customers`);
+
+      // Add batch to all customers
+      allCustomers = [...allCustomers, ...customers];
+
+      console.log(allCustomers.length, "customers in total");
+      console.log(`Sending batch #${batchNumber} to external API...`);
+      //Send current batch to API
+      const externalApiResponse = await fetch(
+        "http://localhost:3000/api/shopify-customer-sync",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            shop: session.shop,
+            customers,
+            isBatch: true,
+            batchSize: BATCH_SIZE,
+            batchNumber,
+            totalProcessed: allCustomers.length,
+          }),
+        },
+      );
+
+      if (!externalApiResponse.ok) {
+        console.error(
+          `Batch #${batchNumber} failed with status: ${externalApiResponse.status}`,
+        );
+        throw new Error(
+          `API call failed with status: ${externalApiResponse.status}`,
+        );
+      }
+
+      console.log(`Batch #${batchNumber} successfully processed`);
+
+      // Update pagination info
+      // hasNextPage = responseJson.data.customers.pageInfo.hasNextPage;
+      // cursor = responseJson.data.customers.pageInfo.endCursor;
+
+      console.log(`Total customers processed so far: ${allCustomers.length}`);
+      console.log(`Has next page: ${hasNextPage}`);
     }
 
-    const apiResult = await externalApiResponse.json();
+    console.log("Customer sync completed successfully!");
+    console.log(`Total customers synchronized: ${allCustomers.length}`);
 
     return json({
       success: true,
-      message: `Successfully synchronized ${customers.length} customers to external API.`,
-      customers,
-      apiResult,
+      message: `Successfully synchronized ${allCustomers.length} customers to external API.`,
+      totalCustomers: allCustomers.length,
+      totalBatches: batchNumber,
+      customers: allCustomers,
     });
   } catch (error) {
     console.error("Error syncing customers:", error);

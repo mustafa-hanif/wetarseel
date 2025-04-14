@@ -34,6 +34,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           id
           name
           email
+          myshopifyDomain
         }
       }
     `,
