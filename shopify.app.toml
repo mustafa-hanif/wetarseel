@@ -3,7 +3,7 @@
 client_id = "94620d8df0055ee9f4903f5f5cf5c08a"
 name = "wetarseel"
 handle = "wetarseel-1"
-application_url = "https://camera-phrase-mall-jerusalem.trycloudflare.com"
+application_url = "https://desert-boring-microwave-teaches.trycloudflare.com"
 embedded = true
 
 [build]
@@ -31,9 +31,9 @@ scopes = "write_products,read_checkouts,read_customers,read_orders"
 
 [auth]
 redirect_urls = [
-  "https://camera-phrase-mall-jerusalem.trycloudflare.com/auth/callback",
-  "https://camera-phrase-mall-jerusalem.trycloudflare.com/auth/shopify/callback",
-  "https://camera-phrase-mall-jerusalem.trycloudflare.com/api/auth/callback"
+  "https://desert-boring-microwave-teaches.trycloudflare.com/auth/callback",
+  "https://desert-boring-microwave-teaches.trycloudflare.com/auth/shopify/callback",
+  "https://desert-boring-microwave-teaches.trycloudflare.com/api/auth/callback"
 ]
 
 [pos]
